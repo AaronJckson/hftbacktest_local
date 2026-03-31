@@ -14,7 +14,7 @@ use crate::{
         proc::Processor,
         state::State,
     },
-    depth::{INVALID_MAX, INVALID_MIN, L2MarketDepth, MarketDepth},
+    depth::{L2MarketDepth, MarketDepth},
     prelude::OrdType,
     types::{
         EXCH_ASK_DEPTH_CLEAR_EVENT,
@@ -131,21 +131,28 @@ where
         price_tick: i64,
         qty: f64,
         timestamp: i64,
+        remaining_qty: &mut f64,
     ) -> Result<(), BacktestError> {
         match order.price_tick.cmp(&price_tick) {
             Ordering::Greater => {}
             Ordering::Less => {
-                self.filled_orders.push(order.order_id);
-                return self.fill::<true>(
-                    order,
-                    timestamp,
-                    true,
-                    order.price_tick,
-                    order.leaves_qty,
-                );
+                // The trade price has crossed below this sell order's price, so it should fill.
+                // PartialFill semantics: fill up to min(leaves_qty, remaining_qty). If
+                // remaining_qty is exhausted the order stays in the book for future trades.
+                let exec_qty = order.leaves_qty.min(*remaining_qty);
+                if exec_qty <= self.depth.lot_size() {
+                    return Ok(());
+                }
+                *remaining_qty -= exec_qty;
+                // Only mark as fully removed from the book if the entire remaining qty is filled.
+                if exec_qty >= order.leaves_qty {
+                    self.filled_orders.push(order.order_id);
+                }
+                return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
             }
             Ordering::Equal => {
-                // Updates the order's queue position.
+                // Same-price fill is gated by queue position, not by remaining_qty, because
+                // the queue model already accounts for the trade qty at this exact price level.
                 self.queue_model.trade(order, qty, &self.depth);
                 let filled_qty = self.queue_model.is_filled(order, &self.depth);
                 if filled_qty > 0.0 {
@@ -171,21 +178,28 @@ where
         price_tick: i64,
         qty: f64,
         timestamp: i64,
+        remaining_qty: &mut f64,
     ) -> Result<(), BacktestError> {
         match order.price_tick.cmp(&price_tick) {
             Ordering::Greater => {
-                self.filled_orders.push(order.order_id);
-                return self.fill::<true>(
-                    order,
-                    timestamp,
-                    true,
-                    order.price_tick,
-                    order.leaves_qty,
-                );
+                // The trade price has crossed above this buy order's price, so it should fill.
+                // PartialFill semantics: fill up to min(leaves_qty, remaining_qty). If
+                // remaining_qty is exhausted the order stays in the book for future trades.
+                let exec_qty = order.leaves_qty.min(*remaining_qty);
+                if exec_qty <= self.depth.lot_size() {
+                    return Ok(());
+                }
+                *remaining_qty -= exec_qty;
+                // Only mark as fully removed from the book if the entire remaining qty is filled.
+                if exec_qty >= order.leaves_qty {
+                    self.filled_orders.push(order.order_id);
+                }
+                return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
             }
             Ordering::Less => {}
             Ordering::Equal => {
-                // Updates the order's queue position.
+                // Same-price fill is gated by queue position, not by remaining_qty, because
+                // the queue model already accounts for the trade qty at this exact price level.
                 self.queue_model.trade(order, qty, &self.depth);
                 let filled_qty = self.queue_model.is_filled(order, &self.depth);
                 if filled_qty > 0.0 {
@@ -290,97 +304,27 @@ where
 
     fn on_best_bid_update(
         &mut self,
-        prev_best_tick: i64,
-        new_best_tick: i64,
-        timestamp: i64,
+        _prev_best_tick: i64,
+        _new_best_tick: i64,
+        _timestamp: i64,
     ) -> Result<(), BacktestError> {
-        // If the best has been significantly updated compared to the previous best, it would be
-        // better to iterate orders dict instead of order price ladder.
-        {
-            let orders = self.orders.clone();
-            let mut orders_borrowed = orders.borrow_mut();
-            if prev_best_tick == INVALID_MIN
-                || (orders_borrowed.len() as i64) < new_best_tick - prev_best_tick
-            {
-                for (_, order) in orders_borrowed.iter_mut() {
-                    if order.side == Side::Sell && order.price_tick <= new_best_tick {
-                        self.filled_orders.push(order.order_id);
-                        self.fill::<true>(
-                            order,
-                            timestamp,
-                            true,
-                            order.price_tick,
-                            order.leaves_qty,
-                        )?;
-                    }
-                }
-            } else {
-                for t in (prev_best_tick + 1)..=new_best_tick {
-                    if let Some(order_ids) = self.sell_orders.get(&t) {
-                        for order_id in order_ids.clone().iter() {
-                            self.filled_orders.push(*order_id);
-                            let order = orders_borrowed.get_mut(order_id).unwrap();
-                            self.fill::<true>(
-                                order,
-                                timestamp,
-                                true,
-                                order.price_tick,
-                                order.leaves_qty,
-                            )?;
-                        }
-                    }
-                }
-            }
-        }
-        self.remove_filled_orders();
+        // Depth-only event: the bid move may be caused entirely by cancellations with no actual
+        // trade occurring. Triggering fills here would overestimate fill probability (liquidity
+        // vacuum bug). Orders crossed by the bid update remain in the book and will only be
+        // filled when a real trade event arrives.
         Ok(())
     }
 
     fn on_best_ask_update(
         &mut self,
-        prev_best_tick: i64,
-        new_best_tick: i64,
-        timestamp: i64,
+        _prev_best_tick: i64,
+        _new_best_tick: i64,
+        _timestamp: i64,
     ) -> Result<(), BacktestError> {
-        // If the best has been significantly updated compared to the previous best, it would be
-        // better to iterate orders dict instead of order price ladder.
-        {
-            let orders = self.orders.clone();
-            let mut orders_borrowed = orders.borrow_mut();
-            if prev_best_tick == INVALID_MAX
-                || (orders_borrowed.len() as i64) < prev_best_tick - new_best_tick
-            {
-                for (_, order) in orders_borrowed.iter_mut() {
-                    if order.side == Side::Buy && order.price_tick >= new_best_tick {
-                        self.filled_orders.push(order.order_id);
-                        self.fill::<true>(
-                            order,
-                            timestamp,
-                            true,
-                            order.price_tick,
-                            order.leaves_qty,
-                        )?;
-                    }
-                }
-            } else {
-                for t in new_best_tick..prev_best_tick {
-                    if let Some(order_ids) = self.buy_orders.get(&t) {
-                        for order_id in order_ids.clone().iter() {
-                            self.filled_orders.push(*order_id);
-                            let order = orders_borrowed.get_mut(order_id).unwrap();
-                            self.fill::<true>(
-                                order,
-                                timestamp,
-                                true,
-                                order.price_tick,
-                                order.leaves_qty,
-                            )?;
-                        }
-                    }
-                }
-            }
-        }
-        self.remove_filled_orders();
+        // Depth-only event: the ask move may be caused entirely by cancellations with no actual
+        // trade occurring. Triggering fills here would overestimate fill probability (liquidity
+        // vacuum bug). Orders crossed by the ask update remain in the book and will only be
+        // filled when a real trade event arrives.
         Ok(())
     }
 
@@ -770,23 +714,53 @@ where
         } else if event.is(EXCH_BUY_TRADE_EVENT) {
             let price_tick = (event.px / self.depth.tick_size()).round() as i64;
             let qty = event.qty;
+            // Total trade qty available to allocate across all filled orders. Once exhausted,
+            // no further fills can be triggered by this single trade event.
+            let mut remaining_qty = qty;
             {
                 let orders = self.orders.clone();
                 let mut orders_borrowed = orders.borrow_mut();
-                if self.depth.best_bid_tick() == INVALID_MIN
-                    || (orders_borrowed.len() as i64) < price_tick - self.depth.best_bid_tick()
-                {
+                // Use the actual lowest sell order price as the loop lower bound instead of
+                // best_bid_tick+1. After a liquidity vacuum, sell orders may sit below the
+                // current best_bid, and best_bid-based bounds would miss them entirely.
+                let min_sell_price_tick = self
+                    .sell_orders
+                    .keys()
+                    .min()
+                    .copied()
+                    .unwrap_or(price_tick);
+                // Choose between iterating all orders vs. iterating by tick based on which is
+                // cheaper. The tick-range span is price_tick - min_sell_price_tick + 1.
+                if (orders_borrowed.len() as i64) < price_tick - min_sell_price_tick + 1 {
                     for (_, order) in orders_borrowed.iter_mut() {
                         if order.side == Side::Sell {
-                            self.check_if_sell_filled(order, price_tick, qty, event.exch_ts)?;
+                            self.check_if_sell_filled(
+                                order,
+                                price_tick,
+                                qty,
+                                event.exch_ts,
+                                &mut remaining_qty,
+                            )?;
+                            if remaining_qty <= 0.0 {
+                                break;
+                            }
                         }
                     }
                 } else {
-                    for t in (self.depth.best_bid_tick() + 1)..=price_tick {
+                    'outer: for t in min_sell_price_tick..=price_tick {
                         if let Some(order_ids) = self.sell_orders.get(&t) {
                             for order_id in order_ids.clone().iter() {
                                 let order = orders_borrowed.get_mut(order_id).unwrap();
-                                self.check_if_sell_filled(order, price_tick, qty, event.exch_ts)?;
+                                self.check_if_sell_filled(
+                                    order,
+                                    price_tick,
+                                    qty,
+                                    event.exch_ts,
+                                    &mut remaining_qty,
+                                )?;
+                                if remaining_qty <= 0.0 {
+                                    break 'outer;
+                                }
                             }
                         }
                     }
@@ -796,23 +770,55 @@ where
         } else if event.is(EXCH_SELL_TRADE_EVENT) {
             let price_tick = (event.px / self.depth.tick_size()).round() as i64;
             let qty = event.qty;
+            // Total trade qty available to allocate across all filled orders. Once exhausted,
+            // no further fills can be triggered by this single trade event.
+            let mut remaining_qty = qty;
             {
                 let orders = self.orders.clone();
                 let mut orders_borrowed = orders.borrow_mut();
-                if self.depth.best_ask_tick() == INVALID_MAX
-                    || (orders_borrowed.len() as i64) < self.depth.best_ask_tick() - price_tick
-                {
+                // Use the actual highest buy order price as the loop upper bound instead of
+                // best_ask_tick-1. After a liquidity vacuum, buy orders may sit above the
+                // current best_ask, and best_ask-based bounds would miss them entirely.
+                let max_buy_price_tick = self
+                    .buy_orders
+                    .keys()
+                    .max()
+                    .copied()
+                    .unwrap_or(price_tick);
+                // Choose between iterating all orders vs. iterating by tick based on which is
+                // cheaper. The tick-range span is max_buy_price_tick - price_tick + 1.
+                if (orders_borrowed.len() as i64) < max_buy_price_tick - price_tick + 1 {
                     for (_, order) in orders_borrowed.iter_mut() {
                         if order.side == Side::Buy {
-                            self.check_if_buy_filled(order, price_tick, qty, event.exch_ts)?;
+                            self.check_if_buy_filled(
+                                order,
+                                price_tick,
+                                qty,
+                                event.exch_ts,
+                                &mut remaining_qty,
+                            )?;
+                            if remaining_qty <= 0.0 {
+                                break;
+                            }
                         }
                     }
                 } else {
-                    for t in (price_tick..self.depth.best_ask_tick()).rev() {
+                    // Iterate from highest buy price downward so that the most price-aggressive
+                    // orders are filled first, consistent with real exchange priority.
+                    'outer: for t in (price_tick..=max_buy_price_tick).rev() {
                         if let Some(order_ids) = self.buy_orders.get(&t) {
                             for order_id in order_ids.clone().iter() {
                                 let order = orders_borrowed.get_mut(order_id).unwrap();
-                                self.check_if_buy_filled(order, price_tick, qty, event.exch_ts)?;
+                                self.check_if_buy_filled(
+                                    order,
+                                    price_tick,
+                                    qty,
+                                    event.exch_ts,
+                                    &mut remaining_qty,
+                                )?;
+                                if remaining_qty <= 0.0 {
+                                    break 'outer;
+                                }
                             }
                         }
                     }
