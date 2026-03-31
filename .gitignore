@@ -10,3 +10,4 @@ docs/_build
 **/tmp_*
 **/*.so
 **/.ipynb_checkpoints
+CLAUDE.md
