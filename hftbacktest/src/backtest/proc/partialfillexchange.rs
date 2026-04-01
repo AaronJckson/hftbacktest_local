@@ -395,8 +395,8 @@ where
                                 Ok(())
                             }
                             TimeInForce::GTC => {
-                                // Takes the market.
-                                for t in self.depth.best_ask_tick()..order.price_tick {
+                                // Sweep [best_ask, order.price_tick] as taker, inclusive on both ends.
+                                for t in self.depth.best_ask_tick()..=order.price_tick {
                                     let qty = self.depth.ask_qty_at_tick(t);
                                     if qty > 0.0 {
                                         let exec_qty = qty.min(order.leaves_qty);
@@ -406,13 +406,17 @@ where
                                         return Ok(());
                                     }
                                 }
-
-                                // The buy order cannot remain in the ask book, as it cannot affect the
-                                // market depth during backtesting based on market-data replay. So, even
-                                // though it simulates partial fill, if the order size is not small enough,
-                                // it introduces unreality.
-                                let (price_tick, leaves_qty) = (order.price_tick, order.leaves_qty);
-                                self.fill::<false>(order, timestamp, false, price_tick, leaves_qty)
+                                // Remaining qty transitions from taker to maker.
+                                // order.price_tick ask qty is exhausted; queue position starts at 0.
+                                self.queue_model.new_order_at_front(order, &self.depth);
+                                order.status = Status::New;
+                                self.buy_orders
+                                    .entry(order.price_tick)
+                                    .or_default()
+                                    .insert(order.order_id);
+                                order.exch_timestamp = timestamp;
+                                self.orders.borrow_mut().insert(order.order_id, order.clone());
+                                Ok(())
                             }
                             TimeInForce::Unsupported => Err(BacktestError::InvalidOrderRequest),
                         }
@@ -523,7 +527,7 @@ where
                                 Ok(())
                             }
                             TimeInForce::GTC => {
-                                // Takes the market.
+                                // Sweep [order.price_tick, best_bid] as taker, inclusive on both ends.
                                 for t in (order.price_tick..=self.depth.best_bid_tick()).rev() {
                                     let qty = self.depth.bid_qty_at_tick(t);
                                     if qty > 0.0 {
@@ -534,13 +538,17 @@ where
                                         return Ok(());
                                     }
                                 }
-
-                                // The sell order cannot remain in the bid book, as it cannot affect the
-                                // market depth during backtesting based on market-data replay. So, even
-                                // though it simulates partial fill, if the order size is not small enough,
-                                // it introduces unreality.
-                                let (price_tick, leaves_qty) = (order.price_tick, order.leaves_qty);
-                                self.fill::<false>(order, timestamp, false, price_tick, leaves_qty)
+                                // Remaining qty transitions from taker to maker.
+                                // order.price_tick bid qty is exhausted; queue position starts at 0.
+                                self.queue_model.new_order_at_front(order, &self.depth);
+                                order.status = Status::New;
+                                self.sell_orders
+                                    .entry(order.price_tick)
+                                    .or_default()
+                                    .insert(order.order_id);
+                                order.exch_timestamp = timestamp;
+                                self.orders.borrow_mut().insert(order.order_id, order.clone());
+                                Ok(())
                             }
                             _ => {
                                 unreachable!();

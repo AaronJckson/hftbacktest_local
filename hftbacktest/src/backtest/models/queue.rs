@@ -30,6 +30,11 @@ where
     /// This function is called when the exchange model accepts the new order.
     fn new_order(&self, order: &mut Order, depth: &MD);
 
+    /// Initialize the queue position to the front of the queue (q_ahead = 0).
+    /// Called when a GTC limit order transitions from taker to maker after exhausting all
+    /// crossed levels: since we virtually cleared the price level, no other order precedes ours.
+    fn new_order_at_front(&self, order: &mut Order, depth: &MD);
+
     /// Adjusts the estimation values when market trades occur at the same price.
     fn trade(&self, order: &mut Order, qty: f64, depth: &MD);
 
@@ -71,6 +76,11 @@ where
             depth.ask_qty_at_tick(order.price_tick)
         };
         order.q = Box::new(front_q_qty);
+    }
+
+    fn new_order_at_front(&self, order: &mut Order, _depth: &MD) {
+        // Virtual taker sweep cleared this price level; no orders precede ours.
+        order.q = Box::new(0.0f64);
     }
 
     fn trade(&self, order: &mut Order, qty: f64, _depth: &MD) {
@@ -170,6 +180,12 @@ where
             q.front_q_qty = depth.ask_qty_at_tick(order.price_tick);
         }
         order.q = Box::new(q);
+    }
+
+    fn new_order_at_front(&self, order: &mut Order, _depth: &MD) {
+        // QueuePos::default() has front_q_qty=0.0, cum_trade_qty=0.0 — queue front position.
+        // Virtual taker sweep cleared this price level; no orders precede ours.
+        order.q = Box::new(QueuePos::default());
     }
 
     fn trade(&self, order: &mut Order, qty: f64, _depth: &MD) {
