@@ -144,8 +144,10 @@ where
                     return Ok(());
                 }
                 *remaining_qty -= exec_qty;
-                // Only mark as fully removed from the book if the entire remaining qty is filled.
-                if exec_qty >= order.leaves_qty {
+                // Use lot-size rounding (matching fill()'s own Status::Filled check) rather than
+                // a raw float comparison, which would miss sub-lot FP residuals and leave a
+                // Filled order stranded in the book as a zombie.
+                if ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64 {
                     self.filled_orders.push(order.order_id);
                 }
                 return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
@@ -156,15 +158,14 @@ where
                 self.queue_model.trade(order, qty, &self.depth);
                 let filled_qty = self.queue_model.is_filled(order, &self.depth);
                 if filled_qty > 0.0 {
-                    // q_ahead is negative since is_filled is true and its value represents the
-                    // executable quantity of this order after execution in the queue ahead of this
-                    // order.
-                    let exec_qty = if filled_qty > order.leaves_qty {
+                    // Cap at leaves_qty in case is_filled returns a larger value.
+                    // Use lot-size rounding to detect full completion: the original
+                    // filled_qty > leaves_qty missed the exact-equal case and FP residuals,
+                    // both of which would leave a Filled order stranded in the book.
+                    let exec_qty = filled_qty.min(order.leaves_qty);
+                    if ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64 {
                         self.filled_orders.push(order.order_id);
-                        order.leaves_qty
-                    } else {
-                        filled_qty
-                    };
+                    }
                     return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
                 }
             }
@@ -190,8 +191,10 @@ where
                     return Ok(());
                 }
                 *remaining_qty -= exec_qty;
-                // Only mark as fully removed from the book if the entire remaining qty is filled.
-                if exec_qty >= order.leaves_qty {
+                // Use lot-size rounding (matching fill()'s own Status::Filled check) rather than
+                // a raw float comparison, which would miss sub-lot FP residuals and leave a
+                // Filled order stranded in the book as a zombie.
+                if ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64 {
                     self.filled_orders.push(order.order_id);
                 }
                 return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
@@ -203,15 +206,14 @@ where
                 self.queue_model.trade(order, qty, &self.depth);
                 let filled_qty = self.queue_model.is_filled(order, &self.depth);
                 if filled_qty > 0.0 {
-                    // q_ahead is negative since is_filled is true and its value represents the
-                    // executable quantity of this order after execution in the queue ahead of this
-                    // order.
-                    let exec_qty = if filled_qty > order.leaves_qty {
+                    // Cap at leaves_qty in case is_filled returns a larger value.
+                    // Use lot-size rounding to detect full completion: the original
+                    // filled_qty > leaves_qty missed the exact-equal case and FP residuals,
+                    // both of which would leave a Filled order stranded in the book.
+                    let exec_qty = filled_qty.min(order.leaves_qty);
+                    if ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64 {
                         self.filled_orders.push(order.order_id);
-                        order.leaves_qty
-                    } else {
-                        filled_qty
-                    };
+                    }
                     return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
                 }
             }
@@ -262,17 +264,18 @@ where
         if !self.filled_orders.is_empty() {
             let mut orders = self.orders.borrow_mut();
             for order_id in self.filled_orders.drain(..) {
-                let order = orders.remove(&order_id).unwrap();
+                let Some(order) = orders.remove(&order_id) else {
+                    // Already removed (e.g. duplicate order_id in filled_orders); skip.
+                    continue;
+                };
                 if order.side == Side::Buy {
-                    self.buy_orders
-                        .get_mut(&order.price_tick)
-                        .unwrap()
-                        .remove(&order_id);
+                    if let Some(set) = self.buy_orders.get_mut(&order.price_tick) {
+                        set.remove(&order_id);
+                    }
                 } else {
-                    self.sell_orders
-                        .get_mut(&order.price_tick)
-                        .unwrap()
-                        .remove(&order_id);
+                    if let Some(set) = self.sell_orders.get_mut(&order.price_tick) {
+                        set.remove(&order_id);
+                    }
                 }
             }
         }
@@ -371,7 +374,12 @@ where
                                             }
                                         }
                                     }
-                                    unreachable!();
+                                    // Floating-point rounding may leave a sub-lot residual that
+                                    // fill() rounds to zero without setting Status::Filled.
+                                    // Expire the order rather than panic.
+                                    order.status = Status::Expired;
+                                    order.exch_timestamp = timestamp;
+                                    return Ok(());
                                 } else {
                                     order.status = Status::Expired;
                                     order.exch_timestamp = timestamp;
@@ -503,7 +511,12 @@ where
                                             }
                                         }
                                     }
-                                    unreachable!();
+                                    // Floating-point rounding may leave a sub-lot residual that
+                                    // fill() rounds to zero without setting Status::Filled.
+                                    // Expire the order rather than panic.
+                                    order.status = Status::Expired;
+                                    order.exch_timestamp = timestamp;
+                                    return Ok(());
                                 } else {
                                     order.status = Status::Expired;
                                     order.exch_timestamp = timestamp;
@@ -550,8 +563,8 @@ where
                                 self.orders.borrow_mut().insert(order.order_id, order.clone());
                                 Ok(())
                             }
-                            _ => {
-                                unreachable!();
+                            TimeInForce::Unsupported => {
+                                Err(BacktestError::InvalidOrderRequest)
                             }
                         }
                     } else {

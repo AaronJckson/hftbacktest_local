@@ -99,7 +99,9 @@ where
             }
 
             // Processes receiving order response.
-            if order.status == Status::Filled {
+            // PartiallyFilled must also trigger apply_fill so that the local state (position,
+            // balance, fees) stays in sync with every incremental fill, not just the final one.
+            if order.status == Status::Filled || order.status == Status::PartiallyFilled {
                 self.state.apply_fill(&order);
             }
             // Applies the received order response to the local orders.
