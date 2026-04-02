@@ -362,14 +362,25 @@ where
                                     }
                                 }
                                 if execute {
+                                    let mut total_fok_qty = 0.0_f64;
+                                    let mut weighted_price_tick_sum = 0.0_f64;
                                     for t in self.depth.best_ask_tick()..=order.price_tick {
                                         let qty = self.depth.ask_qty_at_tick(t);
                                         if qty > 0.0 {
                                             let exec_qty = qty.min(order.leaves_qty);
+                                            total_fok_qty += exec_qty;
+                                            weighted_price_tick_sum += exec_qty * t as f64;
                                             self.fill::<false>(
                                                 order, timestamp, false, t, exec_qty,
                                             )?;
                                             if order.status == Status::Filled {
+                                                // Consolidate exec_qty so local apply_fill
+                                                // receives the total swept qty, not just the
+                                                // last tick's qty (same fix as GTC).
+                                                order.exec_qty = total_fok_qty;
+                                                order.exec_price_tick =
+                                                    (weighted_price_tick_sum / total_fok_qty)
+                                                        .round() as i64;
                                                 return Ok(());
                                             }
                                         }
@@ -496,14 +507,25 @@ where
                                     }
                                 }
                                 if execute {
+                                    let mut total_fok_qty = 0.0_f64;
+                                    let mut weighted_price_tick_sum = 0.0_f64;
                                     for t in (order.price_tick..=self.depth.best_bid_tick()).rev() {
                                         let qty = self.depth.bid_qty_at_tick(t);
                                         if qty > 0.0 {
                                             let exec_qty = qty.min(order.leaves_qty);
+                                            total_fok_qty += exec_qty;
+                                            weighted_price_tick_sum += exec_qty * t as f64;
                                             self.fill::<false>(
                                                 order, timestamp, false, t, exec_qty,
                                             )?;
                                             if order.status == Status::Filled {
+                                                // Consolidate exec_qty so local apply_fill
+                                                // receives the total swept qty, not just the
+                                                // last tick's qty (same fix as GTC).
+                                                order.exec_qty = total_fok_qty;
+                                                order.exec_price_tick =
+                                                    (weighted_price_tick_sum / total_fok_qty)
+                                                        .round() as i64;
                                                 return Ok(());
                                             }
                                         }
