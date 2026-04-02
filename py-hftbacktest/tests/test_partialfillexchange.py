@@ -7,6 +7,8 @@ test_partialfillexchange.py — PartialFillExchange bug 修复回归测试
   TC3 — Bug 7-8 (exchange #273): FOK 浮点边界不 panic
   TC4 — 回归:  NoPartialFillExchange 行为不受影响
 
+测试日期范围: 20250901 ~ 20250906（6 天）
+
 运行方式（服务器，需先 maturin develop --release 编译）:
     cd /home/yhh/Alibaba_HFT/Hftbacktest_strategy
     /home/yhh/miniconda3/envs/py312/bin/python3.12 -m pytest \
@@ -40,7 +42,10 @@ from hftbacktest.order import PARTIALLY_FILLED, FOK
 
 _DATA_ROOT   = '/Volumes/newhomes/NLshare/market_data/incremental_l2_npz'
 _COIN_DIR    = os.path.join(_DATA_ROOT, 'DOGEUSDT')
-_TEST_DATE   = '20250901'
+
+# 测试日期范围：含首尾两端
+_START_DATE  = '20250901'
+_END_DATE    = '20250906'
 
 _TICK_SIZE     = 0.00001
 _LOT_SIZE      = 1.0
@@ -53,21 +58,29 @@ _ORDER_LATENCY = 2_000_000   # 2 ms
 _TRADES_CAP    = 50_000
 
 
-def _find_data_file() -> str | None:
-    """返回 TEST_DATE 对应的第一个 npz 文件路径，若不存在则返回 None。"""
+def _find_data_files() -> list[str]:
+    """
+    返回 [_START_DATE, _END_DATE] 范围内所有 npz 文件路径（有序列表）。
+    文件命名约定与 data/loader.py 一致：{YYYYMMDD}_{symbol}.npz。
+    """
     if not os.path.isdir(_COIN_DIR):
-        return None
+        return []
+    files = []
     for fname in sorted(os.listdir(_COIN_DIR)):
-        if fname.startswith(_TEST_DATE) and fname.endswith('.npz'):
-            return os.path.join(_COIN_DIR, fname)
-    return None
+        if not fname.endswith('.npz'):
+            continue
+        # 取下划线前的日期部分，与 loader.py 解析逻辑一致
+        file_date = fname.split('_')[0]
+        if _START_DATE <= file_date <= _END_DATE:
+            files.append(os.path.join(_COIN_DIR, fname))
+    return files
 
 
-def _make_asset(partial_fill: bool, data_file: str) -> BacktestAsset:
-    """构造 BacktestAsset，根据 partial_fill 选择撮合模型。"""
+def _make_asset(partial_fill: bool, data_files: list[str]) -> BacktestAsset:
+    """构造 BacktestAsset，接受多日文件列表，根据 partial_fill 选择撮合模型。"""
     asset = (
         BacktestAsset()
-        .data([data_file])
+        .data(data_files)
         .linear_asset(1.0)
         .risk_adverse_queue_model()
         .trading_value_fee_model(_MAKER_FEE, _TAKER_FEE)
@@ -87,57 +100,72 @@ def _make_asset(partial_fill: bool, data_file: str) -> BacktestAsset:
 
 
 # ===========================================================================
-# TC1 策略：提交 GTC crossing 大单，追踪 leaves_qty 变化验证 position 更新
+# TC1 策略：持续提交 GTC crossing 大单，追踪 leaves_qty 验证 position 更新
 # ===========================================================================
 
 @njit
 def _tc1_run(hbt, results):
     """
-    策略逻辑：
-      - 首次有效盘口时，提交 GTC buy（价格高于 best_ask），qty=5000 lots
+    策略逻辑（持续 6 天）：
+      - 每当无活跃订单时，提交 GTC buy（价格高于 best_ask），qty=5000 lots
       - GTC crossing：立即以 taker 身份消耗 ask 深度 → PartiallyFilled
       - 剩余量挂回 book，后续 sell trade 继续部分成交
+      - 订单完全成交后清理并立即提交下一笔，覆盖全部 6 天数据
       - 每步通过 leaves_qty 变化量累积手动仓位，与 state.position 对比
 
     results[0] = state.position（本地状态，由 apply_fill 更新）
     results[1] = 手动累积仓位（由 leaves_qty delta 计算）
     results[2] = 检测到成交变化的步数
     """
-    ORDER_ID = 1
-    placed = False
-    manual_position = 0.0
-    fill_steps = 0
-    prev_leaves_qty = 5000.0
+    ORDER_QTY      = 5000.0
+    order_id_counter = 1      # 每笔新订单分配唯一 ID，避免 ID 复用导致查找混乱
+    current_order_id = 0
+    placed           = False
+    manual_position  = 0.0
+    fill_steps       = 0
+    prev_leaves_qty  = 0.0
 
-    step = 0
-    while hbt.elapse(1_000_000_000) == 0 and step < 3600:
-        step += 1
+    while hbt.elapse(1_000_000_000) == 0:   # 1-second steps，跑满全部 6 天数据
         depth = hbt.depth(0)
 
-        # 首次有效盘口后提交 GTC buy，价格高于 best_ask 2 tick（确保触发 crossing）
-        if not placed and depth.best_ask_tick > 0:
-            entry_price = depth.best_ask + 2.0 * _TICK_SIZE
-            hbt.submit_buy_order(0, ORDER_ID, entry_price, 5000.0, GTC, LIMIT, False)
-            placed = True
-
-        if not placed:
+        # 无有效盘口时跳过，等待数据就绪
+        if depth.best_ask_tick <= 0:
             continue
+
+        # 无活跃订单时，提交新的 GTC buy（价格高于 best_ask 2 tick，触发 crossing）
+        if not placed:
+            current_order_id  = order_id_counter
+            order_id_counter += 1
+            entry_price = depth.best_ask + 2.0 * _TICK_SIZE
+            hbt.submit_buy_order(0, current_order_id, entry_price, ORDER_QTY, GTC, LIMIT, False)
+            placed          = True
+            prev_leaves_qty = ORDER_QTY
 
         # 遍历本地订单，通过 leaves_qty delta 检测每步的成交量
         orders = hbt.orders(0)
         values = orders.values()
+        found  = False
         while True:
             order = values.next()
             if order is None:
                 break
-            if order.order_id == ORDER_ID:
+            if order.order_id == current_order_id:
+                found      = True
                 cur_leaves = order.leaves_qty
                 # 阈值 0.5 lot 过滤 FP 噪声，真实成交量均为 lot_size 整数倍
                 if cur_leaves < prev_leaves_qty - 0.5:
                     manual_position += prev_leaves_qty - cur_leaves
-                    fill_steps += 1
-                    prev_leaves_qty = cur_leaves
+                    fill_steps      += 1
+                    prev_leaves_qty  = cur_leaves
+                # 完全成交后清理，下一步提交新订单
+                if cur_leaves < 0.5:
+                    placed = False
+                    hbt.clear_inactive_orders(ALL_ASSETS)
                 break
+
+        # 订单不在 orders 中（外部意外清除）时，同样重置，防止卡死
+        if not found and placed:
+            placed = False
 
     state = hbt.state_values(0)
     results[0] = state.position
@@ -163,7 +191,7 @@ def _tc2_run(hbt):
     order_id = 0
     step = 0
 
-    while hbt.elapse(5_000_000_000) == 0:   # 5-second steps
+    while hbt.elapse(5_000_000_000) == 0:   # 5-second steps，跑满全部 6 天数据
         step += 1
         depth = hbt.depth(0)
 
@@ -207,7 +235,7 @@ def _tc2_run(hbt):
 @njit
 def _tc3_run(hbt):
     """
-    每 10 秒提交一次 FOK buy @ best_ask。
+    每 30 秒提交一次 FOK buy @ best_ask。
     - 若 ask 深度充足 → 全量成交（Filled）
     - 若不足         → Expired（FOK 语义）
     修复前：浮点精度导致成交循环结束时残余量非零，触发 unreachable!() panic。
@@ -216,7 +244,7 @@ def _tc3_run(hbt):
     order_id = 0
     step = 0
 
-    while hbt.elapse(10_000_000_000) == 0:   # 10-second steps
+    while hbt.elapse(10_000_000_000) == 0:   # 10-second steps，跑满全部 6 天数据
         step += 1
         depth = hbt.depth(0)
 
@@ -232,50 +260,63 @@ def _tc3_run(hbt):
 
 
 # ===========================================================================
-# TC4 策略（复用 TC1 逻辑）：NoPartialFillExchange 全量成交不受影响
+# TC4 策略：NoPartialFillExchange 持续下单回归验证
 # ===========================================================================
 
 @njit
 def _tc4_run(hbt, results):
     """
-    使用与 TC1 相同的策略逻辑，但底层为 NoPartialFillExchange。
+    使用与 TC1 相同的持续下单逻辑，但底层为 NoPartialFillExchange。
+    NoPartialFill 语义：订单要么全量成交（leaves_qty → 0），要么不成交。
+    一笔成交对应 leaves_qty 一步降至 0，fill_steps 每次 +1。
+
     验证：
       - 回测正常完成（无异常）
-      - state.position >= 0（有成交则为正）
-      - 订单全量成交时 state.position 与手动累积量一致
+      - state.position 与手动累积量完全一致
     """
-    ORDER_ID = 1
-    placed = False
-    manual_position = 0.0
-    fill_steps = 0
-    prev_leaves_qty = 500.0   # NoPartialFill 单笔全量成交，用较小 qty
+    ORDER_QTY        = 500.0   # NoPartialFill 全量成交，用较小 qty 控制单笔仓位增量
+    order_id_counter = 1
+    current_order_id = 0
+    placed           = False
+    manual_position  = 0.0
+    fill_steps       = 0
+    prev_leaves_qty  = 0.0
 
-    step = 0
-    while hbt.elapse(1_000_000_000) == 0 and step < 3600:
-        step += 1
+    while hbt.elapse(1_000_000_000) == 0:   # 1-second steps，跑满全部 6 天数据
         depth = hbt.depth(0)
 
-        if not placed and depth.best_ask_tick > 0:
-            entry_price = depth.best_ask + 2.0 * _TICK_SIZE
-            hbt.submit_buy_order(0, ORDER_ID, entry_price, 500.0, GTC, LIMIT, False)
-            placed = True
+        if depth.best_ask_tick <= 0:
+            continue
 
         if not placed:
-            continue
+            current_order_id  = order_id_counter
+            order_id_counter += 1
+            entry_price = depth.best_ask + 2.0 * _TICK_SIZE
+            hbt.submit_buy_order(0, current_order_id, entry_price, ORDER_QTY, GTC, LIMIT, False)
+            placed          = True
+            prev_leaves_qty = ORDER_QTY
 
         orders = hbt.orders(0)
         values = orders.values()
+        found  = False
         while True:
             order = values.next()
             if order is None:
                 break
-            if order.order_id == ORDER_ID:
+            if order.order_id == current_order_id:
+                found      = True
                 cur_leaves = order.leaves_qty
                 if cur_leaves < prev_leaves_qty - 0.5:
                     manual_position += prev_leaves_qty - cur_leaves
-                    fill_steps += 1
-                    prev_leaves_qty = cur_leaves
+                    fill_steps      += 1
+                    prev_leaves_qty  = cur_leaves
+                if cur_leaves < 0.5:
+                    placed = False
+                    hbt.clear_inactive_orders(ALL_ASSETS)
                 break
+
+        if not found and placed:
+            placed = False
 
     state = hbt.state_values(0)
     results[0] = state.position
@@ -291,27 +332,28 @@ class TestPartialFillExchange(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.data_file = _find_data_file()
+        cls.data_files = _find_data_files()
 
     def _require_data(self):
-        if self.data_file is None:
+        if not self.data_files:
             self.skipTest(
-                f'DOGEUSDT data for {_TEST_DATE} not found at {_COIN_DIR}. '
+                f'DOGEUSDT data for {_START_DATE}~{_END_DATE} not found at {_COIN_DIR}. '
                 'This test must run on the server where the data is mounted.'
             )
 
     # ------------------------------------------------------------------
-    # TC1 — Bug 1: PartiallyFilled 须触发 apply_fill
+    # TC1 — Bug 1: PartiallyFilled 须触发 apply_fill（持续 6 天验证）
     # ------------------------------------------------------------------
     def test_tc1_partial_fill_updates_local_position(self):
         """
         Bug 1 (local.rs #299):
         state.position 须与手动累积的成交量完全一致。
         修复前：PartiallyFilled 回报不调用 apply_fill → state.position 恒为 0。
+        持续 6 天下单，保证足够的部分成交事件覆盖整个测试窗口。
         """
         self._require_data()
 
-        asset = _make_asset(partial_fill=True, data_file=self.data_file)
+        asset = _make_asset(partial_fill=True, data_files=self.data_files)
         hbt = HashMapMarketDepthBacktest([asset])
         results = np.zeros(3, dtype=np.float64)
         _tc1_run(hbt, results)
@@ -322,7 +364,7 @@ class TestPartialFillExchange(unittest.TestCase):
 
         if fill_steps == 0:
             self.skipTest(
-                'TC1: 未检测到任何成交，无法验证 Bug 1 修复（可能是数据或盘口问题）。'
+                'TC1: 6 天内未检测到任何成交，无法验证 Bug 1 修复（数据或盘口异常）。'
             )
 
         self.assertGreater(fill_steps, 0,
@@ -339,17 +381,17 @@ class TestPartialFillExchange(unittest.TestCase):
         )
 
     # ------------------------------------------------------------------
-    # TC2 — Bugs 2-5: 无僵尸订单（全天压力测试）
+    # TC2 — Bugs 2-5: 无僵尸订单（6 天压力测试）
     # ------------------------------------------------------------------
     def test_tc2_no_zombie_orders_full_day(self):
         """
         Bugs 2-5 (exchange #301):
-        激进挂单压力测试跑满全天数据，若有僵尸订单会触发 InvalidOrderStatus 异常。
+        激进挂单压力测试跑满 6 天数据，若有僵尸订单会触发 InvalidOrderStatus 异常。
         测试通过 = 全程无异常。
         """
         self._require_data()
 
-        asset = _make_asset(partial_fill=True, data_file=self.data_file)
+        asset = _make_asset(partial_fill=True, data_files=self.data_files)
         hbt = HashMapMarketDepthBacktest([asset])
         try:
             _tc2_run(hbt)
@@ -359,7 +401,7 @@ class TestPartialFillExchange(unittest.TestCase):
             )
 
     # ------------------------------------------------------------------
-    # TC3 — Bugs 7-8: FOK 浮点边界不 panic
+    # TC3 — Bugs 7-8: FOK 浮点边界不 panic（6 天验证）
     # ------------------------------------------------------------------
     def test_tc3_fok_no_panic(self):
         """
@@ -369,7 +411,7 @@ class TestPartialFillExchange(unittest.TestCase):
         """
         self._require_data()
 
-        asset = _make_asset(partial_fill=True, data_file=self.data_file)
+        asset = _make_asset(partial_fill=True, data_files=self.data_files)
         hbt = HashMapMarketDepthBacktest([asset])
         try:
             _tc3_run(hbt)
@@ -379,17 +421,17 @@ class TestPartialFillExchange(unittest.TestCase):
             )
 
     # ------------------------------------------------------------------
-    # TC4 — 回归: NoPartialFillExchange 行为不受影响
+    # TC4 — 回归: NoPartialFillExchange 行为不受影响（持续 6 天验证）
     # ------------------------------------------------------------------
     def test_tc4_no_partial_fill_exchange_regression(self):
         """
         回归测试：NoPartialFillExchange 的全量成交流程不受本次改动影响。
         本次修改只涉及 partialfillexchange.rs 和 local.rs，NoPartialFill 路径不变。
-        验证：回测正常完成，且 state.position 与手动累积量一致。
+        持续 6 天下单，验证：回测正常完成，且 state.position 与手动累积量一致。
         """
         self._require_data()
 
-        asset = _make_asset(partial_fill=False, data_file=self.data_file)
+        asset = _make_asset(partial_fill=False, data_files=self.data_files)
         hbt = HashMapMarketDepthBacktest([asset])
         results = np.zeros(3, dtype=np.float64)
 
@@ -405,7 +447,7 @@ class TestPartialFillExchange(unittest.TestCase):
         fill_steps = int(results[2])
 
         if fill_steps == 0:
-            self.skipTest('TC4: 未检测到任何成交，跳过仓位一致性校验。')
+            self.skipTest('TC4: 6 天内未检测到任何成交，跳过仓位一致性校验。')
 
         self.assertAlmostEqual(
             state_pos, manual_pos, places=6,

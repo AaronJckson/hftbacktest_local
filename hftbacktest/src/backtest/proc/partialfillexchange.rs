@@ -404,10 +404,18 @@ where
                             }
                             TimeInForce::GTC => {
                                 // Sweep [best_ask, order.price_tick] as taker, inclusive on both ends.
+                                // Accumulate total taker qty and volume-weighted price tick for a
+                                // single consolidated PartiallyFilled notification to local, so
+                                // apply_fill correctly updates the local position for all taker
+                                // fills (Bug 1 taker-path fix).
+                                let mut total_taker_qty = 0.0_f64;
+                                let mut weighted_price_tick_sum = 0.0_f64;
                                 for t in self.depth.best_ask_tick()..=order.price_tick {
                                     let qty = self.depth.ask_qty_at_tick(t);
                                     if qty > 0.0 {
                                         let exec_qty = qty.min(order.leaves_qty);
+                                        total_taker_qty += exec_qty;
+                                        weighted_price_tick_sum += exec_qty * t as f64;
                                         self.fill::<false>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
@@ -417,7 +425,18 @@ where
                                 // Remaining qty transitions from taker to maker.
                                 // order.price_tick ask qty is exhausted; queue position starts at 0.
                                 self.queue_model.new_order_at_front(order, &self.depth);
-                                order.status = Status::New;
+                                if total_taker_qty > 0.0 {
+                                    // Consolidate all taker fills: exec_qty = total swept qty,
+                                    // exec_price_tick = volume-weighted average price tick.
+                                    // order.status is already PartiallyFilled from the last
+                                    // fill::<false>() call; leave it so local.rs triggers apply_fill.
+                                    order.exec_qty = total_taker_qty;
+                                    order.exec_price_tick =
+                                        (weighted_price_tick_sum / total_taker_qty).round() as i64;
+                                } else {
+                                    // No taker fills; order enters the book as a fresh maker.
+                                    order.status = Status::New;
+                                }
                                 self.buy_orders
                                     .entry(order.price_tick)
                                     .or_default()
@@ -541,10 +560,18 @@ where
                             }
                             TimeInForce::GTC => {
                                 // Sweep [order.price_tick, best_bid] as taker, inclusive on both ends.
+                                // Accumulate total taker qty and volume-weighted price tick for a
+                                // single consolidated PartiallyFilled notification to local, so
+                                // apply_fill correctly updates the local position for all taker
+                                // fills (Bug 1 taker-path fix).
+                                let mut total_taker_qty = 0.0_f64;
+                                let mut weighted_price_tick_sum = 0.0_f64;
                                 for t in (order.price_tick..=self.depth.best_bid_tick()).rev() {
                                     let qty = self.depth.bid_qty_at_tick(t);
                                     if qty > 0.0 {
                                         let exec_qty = qty.min(order.leaves_qty);
+                                        total_taker_qty += exec_qty;
+                                        weighted_price_tick_sum += exec_qty * t as f64;
                                         self.fill::<false>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
@@ -554,7 +581,18 @@ where
                                 // Remaining qty transitions from taker to maker.
                                 // order.price_tick bid qty is exhausted; queue position starts at 0.
                                 self.queue_model.new_order_at_front(order, &self.depth);
-                                order.status = Status::New;
+                                if total_taker_qty > 0.0 {
+                                    // Consolidate all taker fills: exec_qty = total swept qty,
+                                    // exec_price_tick = volume-weighted average price tick.
+                                    // order.status is already PartiallyFilled from the last
+                                    // fill::<false>() call; leave it so local.rs triggers apply_fill.
+                                    order.exec_qty = total_taker_qty;
+                                    order.exec_price_tick =
+                                        (weighted_price_tick_sum / total_taker_qty).round() as i64;
+                                } else {
+                                    // No taker fills; order enters the book as a fresh maker.
+                                    order.status = Status::New;
+                                }
                                 self.sell_orders
                                     .entry(order.price_tick)
                                     .or_default()
