@@ -386,22 +386,7 @@ where
                                     Ok(())
                                 }
                             }
-                            TimeInForce::IOC => {
-                                // The order must be executed immediately.
-                                for t in self.depth.best_ask_tick()..=order.price_tick {
-                                    let qty = self.depth.ask_qty_at_tick(t);
-                                    if qty > 0.0 {
-                                        let exec_qty = qty.min(order.leaves_qty);
-                                        self.fill::<false>(order, timestamp, false, t, exec_qty)?;
-                                    }
-                                    if order.status == Status::Filled {
-                                        return Ok(());
-                                    }
-                                }
-                                order.status = Status::Expired;
-                                order.exch_timestamp = timestamp;
-                                Ok(())
-                            }
+                            TimeInForce::IOC => Err(BacktestError::InvalidOrderRequest),
                             TimeInForce::GTC => {
                                 // Sweep [best_ask, order.price_tick] as taker, inclusive on both ends.
                                 // Accumulate total taker qty and volume-weighted price tick for a
@@ -482,22 +467,7 @@ where
                         }
                     }
                 }
-                OrdType::Market => {
-                    // todo: set the proper upper bound.
-                    for t in self.depth.best_ask_tick()..(self.depth.best_ask_tick() + 100) {
-                        let qty = self.depth.ask_qty_at_tick(t);
-                        if qty > 0.0 {
-                            let exec_qty = qty.min(order.leaves_qty);
-                            self.fill::<false>(order, timestamp, false, t, exec_qty)?;
-                        }
-                        if order.status == Status::Filled {
-                            return Ok(());
-                        }
-                    }
-                    order.status = Status::Expired;
-                    order.exch_timestamp = timestamp;
-                    Ok(())
-                }
+                OrdType::Market => Err(BacktestError::InvalidOrderRequest),
                 OrdType::Unsupported => Err(BacktestError::InvalidOrderRequest),
             }
         } else {
@@ -550,22 +520,7 @@ where
                                     Ok(())
                                 }
                             }
-                            TimeInForce::IOC => {
-                                // The order must be executed immediately.
-                                for t in (order.price_tick..=self.depth.best_bid_tick()).rev() {
-                                    let qty = self.depth.bid_qty_at_tick(t);
-                                    if qty > 0.0 {
-                                        let exec_qty = qty.min(order.leaves_qty);
-                                        self.fill::<false>(order, timestamp, false, t, exec_qty)?;
-                                    }
-                                    if order.status == Status::Filled {
-                                        return Ok(());
-                                    }
-                                }
-                                order.status = Status::Expired;
-                                order.exch_timestamp = timestamp;
-                                Ok(())
-                            }
+                            TimeInForce::IOC => Err(BacktestError::InvalidOrderRequest),
                             TimeInForce::GTC => {
                                 // Sweep [order.price_tick, best_bid] as taker, inclusive on both ends.
                                 // Accumulate total taker qty and volume-weighted price tick for a
@@ -648,23 +603,7 @@ where
                         }
                     }
                 }
-                OrdType::Market => {
-                    // todo: set the proper lower bound.
-                    for t in ((self.depth.best_bid_tick() - 100)..=self.depth.best_bid_tick()).rev()
-                    {
-                        let qty = self.depth.bid_qty_at_tick(t);
-                        if qty > 0.0 {
-                            let exec_qty = qty.min(order.leaves_qty);
-                            self.fill::<false>(order, timestamp, false, t, exec_qty)?;
-                        }
-                        if order.status == Status::Filled {
-                            return Ok(());
-                        }
-                    }
-                    order.status = Status::Expired;
-                    order.exch_timestamp = timestamp;
-                    Ok(())
-                }
+                OrdType::Market => Err(BacktestError::InvalidOrderRequest),
                 OrdType::Unsupported => Err(BacktestError::InvalidOrderRequest),
             }
         }

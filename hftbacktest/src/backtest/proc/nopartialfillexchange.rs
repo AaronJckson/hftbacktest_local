@@ -301,9 +301,9 @@ where
                                 order.exch_timestamp = timestamp;
                                 Ok(())
                             }
-                            TimeInForce::GTC | TimeInForce::FOK | TimeInForce::IOC => {
-                                // Since this always fills the full quantity, both FOK and IOC
-                                // orders are also fully filled at the best price.
+                            TimeInForce::GTC | TimeInForce::FOK => {
+                                // Since this always fills the full quantity, FOK orders are also
+                                // fully filled at the best price.
                                 // Takes the market.
                                 self.fill::<false>(
                                     order,
@@ -312,6 +312,7 @@ where
                                     self.depth.best_ask_tick(),
                                 )
                             }
+                            TimeInForce::IOC => Err(BacktestError::InvalidOrderRequest),
                             TimeInForce::Unsupported => Err(BacktestError::InvalidOrderRequest),
                         }
                     } else {
@@ -332,19 +333,17 @@ where
                                     .insert(order.order_id, order.clone());
                                 Ok(())
                             }
-                            TimeInForce::FOK | TimeInForce::IOC => {
+                            TimeInForce::FOK => {
                                 order.status = Status::Expired;
                                 order.exch_timestamp = timestamp;
                                 Ok(())
                             }
+                            TimeInForce::IOC => Err(BacktestError::InvalidOrderRequest),
                             TimeInForce::Unsupported => Err(BacktestError::InvalidOrderRequest),
                         }
                     }
                 }
-                OrdType::Market => {
-                    // Takes the market.
-                    self.fill::<false>(order, timestamp, false, self.depth.best_ask_tick())
-                }
+                OrdType::Market => Err(BacktestError::InvalidOrderRequest),
                 OrdType::Unsupported => Err(BacktestError::InvalidOrderRequest),
             }
         } else {
@@ -358,9 +357,9 @@ where
                                 order.exch_timestamp = timestamp;
                                 Ok(())
                             }
-                            TimeInForce::GTC | TimeInForce::FOK | TimeInForce::IOC => {
-                                // Since this always fills the full quantity, both FOK and IOC
-                                // orders are also fully filled at the best price.
+                            TimeInForce::GTC | TimeInForce::FOK => {
+                                // Since this always fills the full quantity, FOK orders are also
+                                // fully filled at the best price.
                                 // Takes the market.
                                 self.fill::<false>(
                                     order,
@@ -369,6 +368,7 @@ where
                                     self.depth.best_bid_tick(),
                                 )
                             }
+                            TimeInForce::IOC => Err(BacktestError::InvalidOrderRequest),
                             TimeInForce::Unsupported => Err(BacktestError::InvalidOrderRequest),
                         }
                     } else {
@@ -389,19 +389,17 @@ where
                                     .insert(order.order_id, order.clone());
                                 Ok(())
                             }
-                            TimeInForce::FOK | TimeInForce::IOC => {
+                            TimeInForce::FOK => {
                                 order.status = Status::Expired;
                                 order.exch_timestamp = timestamp;
                                 Ok(())
                             }
+                            TimeInForce::IOC => Err(BacktestError::InvalidOrderRequest),
                             TimeInForce::Unsupported => Err(BacktestError::InvalidOrderRequest),
                         }
                     }
                 }
-                OrdType::Market => {
-                    // Takes the market.
-                    self.fill::<false>(order, timestamp, false, self.depth.best_bid_tick())
-                }
+                OrdType::Market => Err(BacktestError::InvalidOrderRequest),
                 OrdType::Unsupported => Err(BacktestError::InvalidOrderRequest),
             }
         }
