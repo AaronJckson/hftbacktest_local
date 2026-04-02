@@ -419,6 +419,14 @@ where
                                         self.fill::<false>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
+                                        // Full taker sweep: consolidate exec_qty so the single
+                                        // respond() in process_recv_order carries the total swept
+                                        // qty to local's apply_fill, not just the last tick's qty
+                                        // (Bug 1 full-taker-path fix).
+                                        order.exec_qty = total_taker_qty;
+                                        order.exec_price_tick =
+                                            (weighted_price_tick_sum / total_taker_qty).round()
+                                                as i64;
                                         return Ok(());
                                     }
                                 }
@@ -575,6 +583,14 @@ where
                                         self.fill::<false>(order, timestamp, false, t, exec_qty)?;
                                     }
                                     if order.status == Status::Filled {
+                                        // Full taker sweep: consolidate exec_qty so the single
+                                        // respond() in process_recv_order carries the total swept
+                                        // qty to local's apply_fill, not just the last tick's qty
+                                        // (Bug 1 full-taker-path fix).
+                                        order.exec_qty = total_taker_qty;
+                                        order.exec_price_tick =
+                                            (weighted_price_tick_sum / total_taker_qty).round()
+                                                as i64;
                                         return Ok(());
                                     }
                                 }
