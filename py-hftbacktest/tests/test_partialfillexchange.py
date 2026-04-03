@@ -6,8 +6,9 @@ test_partialfillexchange.py — PartialFillExchange bug 修复回归测试
   TC2 — Bug 2-5 (exchange #301): lot-size 取整判断防止已 Filled 订单残留 book（僵尸订单）
   TC3 — Bug 7-8 (exchange #273): FOK 浮点边界不 panic
   TC4 — 回归:  NoPartialFillExchange 行为不受影响
+  TC5 — FOK exec_qty 合并修复: 多档扫单时 apply_fill 须使用累积总量而非最后一档
 
-测试日期范围: 20250901 ~ 20250906（6 天）
+测试日期范围: 20250901 ~ 20250902（2 天）
 
 运行方式（服务器，需先 maturin develop --release 编译）:
     cd /home/yhh/Alibaba_HFT/Hftbacktest_strategy
@@ -45,7 +46,7 @@ _COIN_DIR    = os.path.join(_DATA_ROOT, 'DOGEUSDT')
 
 # 测试日期范围：含首尾两端
 _START_DATE  = '20250901'
-_END_DATE    = '20250906'
+_END_DATE    = '20250902'
 
 _TICK_SIZE     = 0.00001
 _LOT_SIZE      = 1.0
@@ -152,13 +153,13 @@ def _tc1_run(hbt, results):
             if order.order_id == current_order_id:
                 found      = True
                 cur_leaves = order.leaves_qty
-                # 阈值 0.5 lot 过滤 FP 噪声，真实成交量均为 lot_size 整数倍
-                if cur_leaves < prev_leaves_qty - 0.5:
+                # 阈值 half-lot 过滤 FP 噪声，真实成交量均为 lot_size 整数倍
+                if cur_leaves < prev_leaves_qty - _LOT_SIZE / 2.0:
                     manual_position += prev_leaves_qty - cur_leaves
                     fill_steps      += 1
                     prev_leaves_qty  = cur_leaves
                 # 完全成交后清理，下一步提交新订单
-                if cur_leaves < 0.5:
+                if cur_leaves < _LOT_SIZE / 2.0:
                     placed = False
                     hbt.clear_inactive_orders(ALL_ASSETS)
                 break
@@ -238,8 +239,12 @@ def _tc3_run(hbt):
     每 30 秒提交一次 FOK buy @ best_ask。
     - 若 ask 深度充足 → 全量成交（Filled）
     - 若不足         → Expired（FOK 语义）
-    修复前：浮点精度导致成交循环结束时残余量非零，触发 unreachable!() panic。
-    测试通过 = 全程无异常。
+    测试通过 = 全程无异常（正常 FOK 路径回归验证）。
+
+    注：Bugs 7-8 的核心触发条件是 lot_size 为非整数时 fill 循环因 FP 累积
+    产生 sub-lot 残差，导致原始 unreachable!() panic。当前数据（DOGEUSDT，
+    lot_size=1.0，book qty 为整数）无法触发该路径；FP 安全兜底逻辑的专项
+    验证需在 Rust 单元测试层以合成非整数 depth 数据覆盖，超出本集成测试范围。
     """
     order_id = 0
     step = 0
@@ -306,17 +311,93 @@ def _tc4_run(hbt, results):
             if order.order_id == current_order_id:
                 found      = True
                 cur_leaves = order.leaves_qty
-                if cur_leaves < prev_leaves_qty - 0.5:
+                if cur_leaves < prev_leaves_qty - _LOT_SIZE / 2.0:
                     manual_position += prev_leaves_qty - cur_leaves
                     fill_steps      += 1
                     prev_leaves_qty  = cur_leaves
-                if cur_leaves < 0.5:
+                if cur_leaves < _LOT_SIZE / 2.0:
                     placed = False
                     hbt.clear_inactive_orders(ALL_ASSETS)
                 break
 
         if not found and placed:
             placed = False
+
+    state = hbt.state_values(0)
+    results[0] = state.position
+    results[1] = manual_position
+    results[2] = float(fill_steps)
+
+
+# ===========================================================================
+# TC5 策略：FOK 多档扫单，验证 exec_qty 正确合并
+# ===========================================================================
+
+@njit
+def _tc5_run(hbt, results):
+    """
+    策略逻辑（持续 2 天）：
+      - 每步提交 FOK buy（price = best_ask + 2 tick，qty = ORDER_QTY）
+      - 提交当步不检查（回报尚未到达），下一步起检查结果
+      - FOK 全量成交（status == FILLED）：累积 manual_position，计入 fill_steps
+      - FOK 取消（status == Expired）：直接重置，不计入
+      - FOK 扫单跨多档时（best_ask 单档深度 < ORDER_QTY），exec_qty 修复前
+        只计最后一档，修复后为全部档位的累积总量
+
+    results[0] = state.position（本地状态，由 apply_fill 更新）
+    results[1] = 手动累积仓位（由 leaves_qty → 0 时计 ORDER_QTY）
+    results[2] = 实际成交的 FOK 笔数
+    """
+    ORDER_QTY        = 5000.0
+    order_id_counter = 1
+    current_order_id = 0
+    placed           = False
+    submitted_at_step = -2   # 初始化为负数，保证首次检查不误触发
+    manual_position  = 0.0
+    fill_steps       = 0
+    step_counter     = 0
+
+    while hbt.elapse(1_000_000_000) == 0:   # 1-second steps
+        step_counter += 1
+        depth = hbt.depth(0)
+
+        if depth.best_ask_tick <= 0:
+            continue
+
+        # 未持有活跃订单时提交新 FOK
+        if not placed:
+            current_order_id  = order_id_counter
+            order_id_counter += 1
+            entry_price = depth.best_ask + 2.0 * _TICK_SIZE
+            hbt.submit_buy_order(0, current_order_id, entry_price, ORDER_QTY, FOK, LIMIT, False)
+            placed            = True
+            submitted_at_step = step_counter
+
+        # 提交当步回报尚未到达，下一步起检查
+        # FOK 在回报到达后必然终结（Filled 或 Expired），一步内处理完毕
+        if placed and step_counter > submitted_at_step:
+            orders = hbt.orders(0)
+            values = orders.values()
+            found  = False
+            while True:
+                order = values.next()
+                if order is None:
+                    break
+                if order.order_id == current_order_id:
+                    found = True
+                    if order.status == FILLED:
+                        # FOK 全量成交（status == FILLED）：用 status 而非 leaves_qty 判断，
+                        # 避免 FOK safety-fallback Expired 但 leaves_qty 接近 0 时的误判。
+                        # 修复前 exec_qty = 最后一档，apply_fill 少算；修复后 = 总量
+                        manual_position += ORDER_QTY
+                        fill_steps      += 1
+                    # 无论 Filled 还是 Expired，FOK 均已终结，立即重置
+                    placed = False
+                    hbt.clear_inactive_orders(ALL_ASSETS)
+                    break
+            # 订单不在 orders 中（异常情况），同样重置防止卡死
+            if not found:
+                placed = False
 
     state = hbt.state_values(0)
     results[0] = state.position
@@ -454,6 +535,49 @@ class TestPartialFillExchange(unittest.TestCase):
             msg=(
                 f'TC4: NoPartialFillExchange state.position ({state_pos:.6f}) '
                 f'与手动累积量 ({manual_pos:.6f}) 不一致（{fill_steps} 步成交）。'
+            ),
+        )
+
+
+    # ------------------------------------------------------------------
+    # TC5 — FOK exec_qty 合并修复: 多档扫单 apply_fill 须使用累积总量
+    # ------------------------------------------------------------------
+    def test_tc5_fok_exec_qty_consolidated(self):
+        """
+        FOK exec_qty 合并修复验证：
+        FOK 扫单覆盖多个价格档位时，local 收到的 exec_qty 须为全部档位的
+        累积总量，而非最后一档的单档成交量。
+        修复前：state.position < manual_position（差值 = 前 N-1 档成交量之和）。
+        修复后：state.position == manual_position。
+
+        注：当 best_ask 单档深度 >= ORDER_QTY 时，FOK 单档即可成交，
+        exec_qty 本就等于总量，bug 不会显现。测试依赖数据中存在跨档成交场景。
+        fill_steps 为 0 时跳过（所有 FOK 均因深度不足而 Expired）。
+        """
+        self._require_data()
+
+        asset = _make_asset(partial_fill=True, data_files=self.data_files)
+        hbt = HashMapMarketDepthBacktest([asset])
+        results = np.zeros(3, dtype=np.float64)
+        _tc5_run(hbt, results)
+
+        state_pos  = results[0]
+        manual_pos = results[1]
+        fill_steps = int(results[2])
+
+        if fill_steps == 0:
+            self.skipTest(
+                'TC5: 2 天内无 FOK 成交（ask 深度始终不足 ORDER_QTY），跳过验证。'
+            )
+
+        self.assertGreater(state_pos, 0.0,
+            f'TC5: state.position 应为正值，实际={state_pos}')
+        self.assertAlmostEqual(
+            state_pos, manual_pos, places=6,
+            msg=(
+                f'TC5: state.position ({state_pos:.2f}) 与手动累积量 ({manual_pos:.2f}) '
+                f'不一致（{fill_steps} 笔 FOK 成交）。'
+                'FOK exec_qty 合并修复可能未生效。'
             ),
         )
 

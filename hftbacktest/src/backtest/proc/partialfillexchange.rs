@@ -140,7 +140,10 @@ where
                 // PartialFill semantics: fill up to min(leaves_qty, remaining_qty). If
                 // remaining_qty is exhausted the order stays in the book for future trades.
                 let exec_qty = order.leaves_qty.min(*remaining_qty);
-                if exec_qty <= self.depth.lot_size() {
+                // Skip sub-lot FP residuals (exec_qty < 1 lot). Use lot-size rounding so that
+                // exactly-1-lot fills (exec_qty == lot_size) are NOT skipped — the previous
+                // `<= lot_size` guard incorrectly filtered those out.
+                if (exec_qty / self.depth.lot_size()).round() < 1.0 {
                     return Ok(());
                 }
                 *remaining_qty -= exec_qty;
@@ -187,7 +190,10 @@ where
                 // PartialFill semantics: fill up to min(leaves_qty, remaining_qty). If
                 // remaining_qty is exhausted the order stays in the book for future trades.
                 let exec_qty = order.leaves_qty.min(*remaining_qty);
-                if exec_qty <= self.depth.lot_size() {
+                // Skip sub-lot FP residuals (exec_qty < 1 lot). Use lot-size rounding so that
+                // exactly-1-lot fills (exec_qty == lot_size) are NOT skipped — the previous
+                // `<= lot_size` guard incorrectly filtered those out.
+                if (exec_qty / self.depth.lot_size()).round() < 1.0 {
                     return Ok(());
                 }
                 *remaining_qty -= exec_qty;
