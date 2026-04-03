@@ -27,6 +27,7 @@ from .order import (
     CANCELED,
     GTC,
     GTX,
+    FOK,
     LIMIT,
     MARKET,
 )
