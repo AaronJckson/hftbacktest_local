@@ -168,6 +168,22 @@ def _tc1_run(hbt, results):
         if not found and placed:
             placed = False
 
+    # 循环结束后补捉：数据末尾最后一次 elapse() 内处理的成交在 loop body 执行前已到达，
+    # apply_fill 已更新 state.position，但 manual_position 未累积，需在此补齐。
+    if placed:
+        orders = hbt.orders(0)
+        values = orders.values()
+        while True:
+            order = values.next()
+            if order is None:
+                break
+            if order.order_id == current_order_id:
+                cur_leaves = order.leaves_qty
+                if cur_leaves < prev_leaves_qty - _LOT_SIZE / 2.0:
+                    manual_position += prev_leaves_qty - cur_leaves
+                    fill_steps      += 1
+                break
+
     state = hbt.state_values(0)
     results[0] = state.position
     results[1] = manual_position
@@ -323,6 +339,21 @@ def _tc4_run(hbt, results):
         if not found and placed:
             placed = False
 
+    # 循环结束后补捉：数据末尾最后一次 elapse() 内处理的成交在 loop body 执行前已到达
+    if placed:
+        orders = hbt.orders(0)
+        values = orders.values()
+        while True:
+            order = values.next()
+            if order is None:
+                break
+            if order.order_id == current_order_id:
+                cur_leaves = order.leaves_qty
+                if cur_leaves < prev_leaves_qty - _LOT_SIZE / 2.0:
+                    manual_position += prev_leaves_qty - cur_leaves
+                    fill_steps      += 1
+                break
+
     state = hbt.state_values(0)
     results[0] = state.position
     results[1] = manual_position
@@ -398,6 +429,20 @@ def _tc5_run(hbt, results):
             # 订单不在 orders 中（异常情况），同样重置防止卡死
             if not found:
                 placed = False
+
+    # 循环结束后补捉：数据末尾最后一次 elapse() 内处理的 FOK 成交在 loop body 执行前已到达
+    if placed:
+        orders = hbt.orders(0)
+        values = orders.values()
+        while True:
+            order = values.next()
+            if order is None:
+                break
+            if order.order_id == current_order_id:
+                if order.status == FILLED:
+                    manual_position += ORDER_QTY
+                    fill_steps      += 1
+                break
 
     state = hbt.state_values(0)
     results[0] = state.position
