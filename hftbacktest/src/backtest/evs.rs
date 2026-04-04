@@ -103,20 +103,4 @@ impl EventSet {
     pub fn invalidate_exch_data(&mut self, asset_no: usize) {
         self.invalidate(4 * asset_no + 2);
     }
-
-    /// Returns true when all LocalData and ExchData slots are exhausted (i64::MAX).
-    /// Order slots (LocalOrder, ExchOrder) are intentionally excluded: pending orders
-    /// in flight after data ends must not prevent the backtest from terminating.
-    pub fn is_market_data_exhausted(&self) -> bool {
-        let num_assets = self.timestamp.len() / 4;
-        for i in 0..num_assets {
-            if self.timestamp[4 * i] != i64::MAX {
-                return false; // LocalData still active
-            }
-            if self.timestamp[4 * i + 2] != i64::MAX {
-                return false; // ExchData still active
-            }
-        }
-        true
-    }
 }

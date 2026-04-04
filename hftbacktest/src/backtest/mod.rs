@@ -765,15 +765,6 @@ where
             self.evs
                 .update_local_order(asset_no, local.earliest_recv_order_timestamp());
         }
-        // When all market data is exhausted, terminate immediately.
-        // Pending order events (ExchOrder/LocalOrder) are deliberately ignored here:
-        // if the strategy continues submitting orders after data ends, those orders
-        // generate fill responses that in turn trigger new order submissions, creating
-        // an infinite loop when order_latency > signal_interval. Market data exhaustion
-        // is the correct termination signal for the backtest.
-        if self.evs.is_market_data_exhausted() {
-            return Ok(ElapseResult::EndOfData);
-        }
         loop {
             match self.evs.next() {
                 Some(ev) => {
