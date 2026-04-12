@@ -98,6 +98,7 @@ order_dtype = np.dtype(
         ('exch_timestamp', 'i8'),
         ('local_timestamp', 'i8'),
         ('order_id', 'u8'),
+        ('front_q_qty', 'f8'),
         ('_q1', 'u8'),
         ('_q2', 'u8'),
         ('maker', 'bool'),

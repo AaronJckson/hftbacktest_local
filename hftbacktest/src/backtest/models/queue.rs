@@ -76,21 +76,25 @@ where
             depth.ask_qty_at_tick(order.price_tick)
         };
         order.q = Box::new(front_q_qty);
+        order.front_q_qty = front_q_qty;
     }
 
     fn new_order_at_front(&self, order: &mut Order, _depth: &MD) {
         // Virtual taker sweep cleared this price level; no orders precede ours.
         order.q = Box::new(0.0f64);
+        order.front_q_qty = 0.0;
     }
 
     fn trade(&self, order: &mut Order, qty: f64, _depth: &MD) {
         let front_q_qty = order.q.as_any_mut().downcast_mut::<f64>().unwrap();
         *front_q_qty -= qty;
+        order.front_q_qty = *front_q_qty;
     }
 
     fn depth(&self, order: &mut Order, _prev_qty: f64, new_qty: f64, _depth: &MD) {
         let front_q_qty = order.q.as_any_mut().downcast_mut::<f64>().unwrap();
         *front_q_qty = front_q_qty.min(new_qty);
+        order.front_q_qty = *front_q_qty;
     }
 
     fn is_filled(&self, order: &mut Order, depth: &MD) -> f64 {
@@ -98,6 +102,7 @@ where
         let exec = (-*front_q_qty / depth.lot_size()).round() as i64;
         if exec > 0 {
             *front_q_qty = 0.0;
+            order.front_q_qty = 0.0;
             (exec as f64) * depth.lot_size()
         } else {
             0.0
@@ -179,12 +184,14 @@ where
         } else {
             q.front_q_qty = depth.ask_qty_at_tick(order.price_tick);
         }
+        order.front_q_qty = q.front_q_qty;
         order.q = Box::new(q);
     }
 
     fn new_order_at_front(&self, order: &mut Order, _depth: &MD) {
         // QueuePos::default() has front_q_qty=0.0, cum_trade_qty=0.0 — queue front position.
         // Virtual taker sweep cleared this price level; no orders precede ours.
+        order.front_q_qty = 0.0;
         order.q = Box::new(QueuePos::default());
     }
 
@@ -192,6 +199,7 @@ where
         let q = order.q.as_any_mut().downcast_mut::<QueuePos>().unwrap();
         q.front_q_qty -= qty;
         q.cum_trade_qty += qty;
+        order.front_q_qty = q.front_q_qty;
     }
 
     fn depth(&self, order: &mut Order, prev_qty: f64, new_qty: f64, _depth: &MD) {
@@ -205,6 +213,7 @@ where
         // For an increase of the quantity, front queue doesn't change by the quantity change.
         if chg < 0.0 {
             q.front_q_qty = q.front_q_qty.min(new_qty);
+            order.front_q_qty = q.front_q_qty;
             return;
         }
 
@@ -218,6 +227,7 @@ where
 
         let est_front = front - (1.0 - prob) * chg + (back - prob * chg).min(0.0);
         q.front_q_qty = est_front.min(new_qty);
+        order.front_q_qty = q.front_q_qty;
     }
 
     fn is_filled(&self, order: &mut Order, depth: &MD) -> f64 {
@@ -225,6 +235,7 @@ where
         let exec = (-q.front_q_qty / depth.lot_size()).round() as i64;
         if exec > 0 {
             q.front_q_qty = 0.0;
+            order.front_q_qty = 0.0;
             (exec as f64) * depth.lot_size()
         } else {
             0.0
@@ -682,6 +693,7 @@ where
             leaves_qty: order.qty,
             price_tick: order_price_tick,
             exch_timestamp: order.exch_ts,
+            front_q_qty: f64::NAN,
             q: Box::new(L3OrderSource::MarketFeed),
             tick_size,
             order_id,
@@ -1208,6 +1220,7 @@ mod l3_tests {
                 exch_timestamp: 0,
                 local_timestamp: 0,
                 order_id: 1,
+                front_q_qty: f64::NAN,
                 q: Box::new(()),
                 maker: false,
                 order_type: OrdType::Limit,
@@ -1242,6 +1255,7 @@ mod l3_tests {
                 exch_timestamp: 0,
                 local_timestamp: 0,
                 order_id: 1,
+                front_q_qty: f64::NAN,
                 q: Box::new(()),
                 maker: false,
                 order_type: OrdType::Limit,
@@ -1298,6 +1312,7 @@ mod l3_tests {
                 exch_timestamp: 0,
                 local_timestamp: 0,
                 order_id: 1,
+                front_q_qty: f64::NAN,
                 q: Box::new(()),
                 maker: false,
                 order_type: OrdType::Limit,

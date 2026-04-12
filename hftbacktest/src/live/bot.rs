@@ -393,6 +393,7 @@ where
             exch_timestamp: 0,
             exec_qty: 0.0,
             // Invalid information
+            front_q_qty: f64::NAN,
             q: Box::new(()),
             maker: false,
         };
