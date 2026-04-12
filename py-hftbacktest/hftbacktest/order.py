@@ -157,15 +157,6 @@ class Order:
         return self.arr[0].order_id
 
     @property
-    def front_q_qty(self) -> float64:
-        """
-        Returns the estimated quantity ahead of this order in the queue, maintained by the queue
-        model. NaN when the queue model is not active (e.g. live bot or before the order enters the
-        order book).
-        """
-        return self.arr[0].front_q_qty
-
-    @property
     def order_type(self) -> uint8:
         """
         Returns the order type. This can be one of the following values, but may vary depending on the exchange model.
