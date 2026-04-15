@@ -215,5 +215,21 @@ class Order:
         """
         return self.arr[0].time_in_force
 
+    @property
+    def fill_bid_tick(self) -> int64:
+        """
+        Returns the best bid price in ticks at the moment this order was filled.
+        Only valid when status is FILLED or PARTIALLY_FILLED.
+        """
+        return self.arr[0].fill_bid_tick
+
+    @property
+    def fill_ask_tick(self) -> int64:
+        """
+        Returns the best ask price in ticks at the moment this order was filled.
+        Only valid when status is FILLED or PARTIALLY_FILLED.
+        """
+        return self.arr[0].fill_ask_tick
+
 
 Order_ = jitclass(Order)

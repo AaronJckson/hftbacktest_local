@@ -257,6 +257,8 @@ where
             order.status = Status::Filled;
         }
         order.exch_timestamp = timestamp;
+        order.fill_bid_tick = self.depth.best_bid_tick();
+        order.fill_ask_tick = self.depth.best_ask_tick();
 
         self.state.apply_fill(order);
 

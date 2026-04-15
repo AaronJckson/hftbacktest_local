@@ -522,6 +522,12 @@ pub struct Order {
     pub status: Status,
     pub side: Side,
     pub time_in_force: TimeInForce,
+    /// Best bid price in ticks at the moment this order was filled.
+    /// Only valid when status is Filled or PartiallyFilled.
+    pub fill_bid_tick: i64,
+    /// Best ask price in ticks at the moment this order was filled.
+    /// Only valid when status is Filled or PartiallyFilled.
+    pub fill_ask_tick: i64,
 }
 
 impl Order {
@@ -552,6 +558,8 @@ impl Order {
             q: Box::new(()),
             maker: false,
             order_type,
+            fill_bid_tick: 0,
+            fill_ask_tick: 0,
         }
     }
 
@@ -618,6 +626,8 @@ impl Order {
         self.q = order.q.clone();
         self.maker = order.maker;
         self.order_type = order.order_type;
+        self.fill_bid_tick = order.fill_bid_tick;
+        self.fill_ask_tick = order.fill_ask_tick;
     }
 }
 
@@ -639,6 +649,8 @@ impl Debug for Order {
             .field("order_id", &self.order_id)
             .field("maker", &self.maker)
             .field("order_type", &self.order_type)
+            .field("fill_bid_tick", &self.fill_bid_tick)
+            .field("fill_ask_tick", &self.fill_ask_tick)
             .finish()
     }
 }
@@ -663,6 +675,8 @@ impl<Context> Decode<Context> for Order {
             status: Decode::decode(decoder)?,
             side: Decode::decode(decoder)?,
             time_in_force: Decode::decode(decoder)?,
+            fill_bid_tick: Decode::decode(decoder)?,
+            fill_ask_tick: Decode::decode(decoder)?,
         })
     }
 }
@@ -687,6 +701,8 @@ impl<'de, Context> BorrowDecode<'de, Context> for Order {
             status: Decode::decode(decoder)?,
             side: Decode::decode(decoder)?,
             time_in_force: Decode::decode(decoder)?,
+            fill_bid_tick: Decode::decode(decoder)?,
+            fill_ask_tick: Decode::decode(decoder)?,
         })
     }
 }
@@ -709,6 +725,8 @@ impl Encode for Order {
         self.status.encode(encoder)?;
         self.side.encode(encoder)?;
         self.time_in_force.encode(encoder)?;
+        self.fill_bid_tick.encode(encoder)?;
+        self.fill_ask_tick.encode(encoder)?;
         Ok(())
     }
 }

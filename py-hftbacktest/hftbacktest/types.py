@@ -105,7 +105,9 @@ order_dtype = np.dtype(
         ('req', 'u1'),
         ('status', 'u1'),
         ('side', 'i1'),
-        ('time_in_force', 'u1')
+        ('time_in_force', 'u1'),
+        ('fill_bid_tick', 'i8'),
+        ('fill_ask_tick', 'i8'),
     ],
     align=True
 )
