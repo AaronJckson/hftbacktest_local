@@ -695,6 +695,8 @@ where
             req: Status::None,
             status: Status::None,
             time_in_force: TimeInForce::GTC,
+            fill_bid_tick: 0,
+            fill_ask_tick: 0,
         });
 
         match self.mkt_feed_orders.entry(order_id) {
