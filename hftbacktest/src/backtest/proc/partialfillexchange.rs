@@ -150,10 +150,19 @@ where
                 // Use lot-size rounding (matching fill()'s own Status::Filled check) rather than
                 // a raw float comparison, which would miss sub-lot FP residuals and leave a
                 // Filled order stranded in the book as a zombie.
-                if ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64 {
+                let fully_filled =
+                    ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64;
+                if fully_filled {
                     self.filled_orders.push(order.order_id);
+                    return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
                 }
-                return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
+                // Partial fill on a price-crossing trade: the cross event virtually swept this
+                // price level (no other orders precede ours in the book any more, otherwise the
+                // trade could not have reached a worse price). Reset queue position to the front
+                // — same semantics as the taker→maker transition in ack_new.
+                self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty)?;
+                self.queue_model.new_order_at_front(order, &self.depth);
+                return Ok(());
             }
             Ordering::Equal => {
                 // Same-price fill is gated by queue position, not by remaining_qty, because
@@ -200,10 +209,19 @@ where
                 // Use lot-size rounding (matching fill()'s own Status::Filled check) rather than
                 // a raw float comparison, which would miss sub-lot FP residuals and leave a
                 // Filled order stranded in the book as a zombie.
-                if ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64 {
+                let fully_filled =
+                    ((order.leaves_qty - exec_qty) / self.depth.lot_size()).round() <= 0f64;
+                if fully_filled {
                     self.filled_orders.push(order.order_id);
+                    return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
                 }
-                return self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty);
+                // Partial fill on a price-crossing trade: the cross event virtually swept this
+                // price level (no other orders precede ours in the book any more, otherwise the
+                // trade could not have reached a worse price). Reset queue position to the front
+                // — same semantics as the taker→maker transition in ack_new.
+                self.fill::<true>(order, timestamp, true, order.price_tick, exec_qty)?;
+                self.queue_model.new_order_at_front(order, &self.depth);
+                return Ok(());
             }
             Ordering::Less => {}
             Ordering::Equal => {
