@@ -224,7 +224,9 @@ class Stats:
 
         ax1.grid()
 
-        ax2.plot(entire_df['timestamp'], entire_df['position'], label='Position')
+        # Scale position to coin units so panel is comparable across legs with
+        # different contract_size (e.g. BN spot 1 vs OKX swap 0.1/10).
+        ax2.plot(entire_df['timestamp'], entire_df['position'] * self._contract_size, label='Position')
 
         ax2_ = ax2.twinx()
         ax2_.plot(entire_df['timestamp'], entire_df['price'], 'black', alpha=0.2, label='Price')
@@ -407,6 +409,11 @@ class Record(ABC):
             splits = hourly(self.df)
         else:
             splits = []
+
+        # Thread the record's contract_size into kwargs so position-value metrics
+        # (MaxPositionValue / Mean / Median / MaxLeverage) auto-receive it when
+        # instantiated from a class; user-passed contract_size kwarg still wins.
+        kwargs = {'contract_size': self._contract_size, **kwargs}
 
         stats = [compute_metrics(df, metrics, kwargs) for df in splits]
         # For the entire period.

@@ -307,16 +307,21 @@ class DailyTradingValue(TradingValue):
 class MaxPositionValue(Metric):
     """
     Calculates the maximum open position value.
+    df['position'] is in engine-native lots; multiplying by contract_size converts to coin units
+    so |position|*price*contract_size yields true $ notional. For contract_size=1 (default) the
+    behaviour is identical to the previous formula.
 
     Parameters:
         name: Name of this metric. The default value is `MaxPositionValue`.
+        contract_size: Contract multiplier of the asset. Defaults to 1.0.
     """
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: str = None, contract_size: float = 1.0):
         self.name = name if name is not None else 'MaxPositionValue'
+        self.contract_size = contract_size
 
     def compute(self, df: pl.DataFrame, context: Dict[str, Any]) -> Mapping[str, Any]:
-        return {self.name: (df['position'].abs() * df['price']).max()}
+        return {self.name: (df['position'].abs() * df['price'] * self.contract_size).max()}
 
 
 class MeanPositionValue(Metric):
@@ -325,13 +330,15 @@ class MeanPositionValue(Metric):
 
     Parameters:
         name: Name of this metric. The default value is `MeanPositionValue`.
+        contract_size: Contract multiplier of the asset. Defaults to 1.0.
     """
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: str = None, contract_size: float = 1.0):
         self.name = name if name is not None else 'MeanPositionValue'
+        self.contract_size = contract_size
 
     def compute(self, df: pl.DataFrame, context: Dict[str, Any]) -> Mapping[str, Any]:
-        return {self.name: (df['position'].abs() * df['price']).mean()}
+        return {self.name: (df['position'].abs() * df['price'] * self.contract_size).mean()}
 
 
 class MedianPositionValue(Metric):
@@ -340,13 +347,15 @@ class MedianPositionValue(Metric):
 
     Parameters:
         name: Name of this metric. The default value is `MedianPositionValue`.
+        contract_size: Contract multiplier of the asset. Defaults to 1.0.
     """
 
-    def __init__(self, name: str = None):
+    def __init__(self, name: str = None, contract_size: float = 1.0):
         self.name = name if name is not None else 'MedianPositionValue'
+        self.contract_size = contract_size
 
     def compute(self, df: pl.DataFrame, context: Dict[str, Any]) -> Mapping[str, Any]:
-        return {self.name: (df['position'].abs() * df['price']).median()}
+        return {self.name: (df['position'].abs() * df['price'] * self.contract_size).median()}
 
 
 class MaxLeverage(Metric):
@@ -356,13 +365,15 @@ class MaxLeverage(Metric):
     Parameters:
         name: Name of this metric. The default value is `MaxLeverage`.
         book_size: Capital allocation.
+        contract_size: Contract multiplier of the asset. Defaults to 1.0.
     """
 
-    def __init__(self, name: str = None, book_size: float = 0.0):
+    def __init__(self, name: str = None, book_size: float = 0.0, contract_size: float = 1.0):
         if book_size <= 0.0:
             warnings.warn('book_size should be positive.', UserWarning)
         self.name = name if name is not None else 'MaxLeverage'
         self.capital = book_size
+        self.contract_size = contract_size
 
     def compute(self, df: pl.DataFrame, context: Dict[str, Any]) -> Mapping[str, Any]:
-        return {self.name: (df['position'].abs() * df['price']).max() / self.capital}
+        return {self.name: (df['position'].abs() * df['price'] * self.contract_size).max() / self.capital}
