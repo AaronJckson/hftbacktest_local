@@ -69,6 +69,8 @@ class Stats:
         self.entire = entire
         self.splits = splits
         self.kwargs = kwargs
+        # Record.stats() threads contract_size into kwargs (see line 416); plot_matplotlib reads it directly.
+        self._contract_size = kwargs.get('contract_size', 1.0)
 
     def summary(self, pretty: bool = False):
         """
